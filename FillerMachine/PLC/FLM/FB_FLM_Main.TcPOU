@@ -1,0 +1,162 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_FLM_Main" Id="{07cf9b5a-7a88-4fa6-a07b-0dc788ab8d1a}" SpecialFunc="None">
+    <Declaration><![CDATA[(* -----------------------------------------------------------------------------
+| This sample has been supplied by Beckhoff As-Is and is intended only as an   |
+| example implementation. Functionality is not guaranteed.                     |
+----------------------------------------------------------------------------- *)
+
+FUNCTION_BLOCK FB_FLM_Main
+
+VAR_INPUT
+	bEnable			: BOOL;
+	tTaskCycleTime	: UDINT;
+	nId				: USINT;	
+	bHwError		: BOOL;	
+END_VAR
+
+VAR_OUTPUT
+
+END_VAR
+	
+VAR_IN_OUT
+	stRawIn : ST_FLM_RawIn;
+	stIn : ST_FLM_In;	
+	stRawOut : ST_FLM_RawOut;
+	stOut : ST_FLM_Out;
+	stCtrl : ST_FLM_Ctrl;	
+	stParams : ST_FLM_Params;
+	stDiagnostic : ST_Diagnostic;
+	stStatus : ST_FLM_Status;
+	stStatusSaved : ST_FLM_StatusSaved;
+	stMotion : ST_FLM_Motion;
+
+END_VAR
+
+VAR
+	bInitialized : BOOL;
+	stCmd : ST_FLM_Cmd;
+	errno : INT;
+	(* fbReadPar : fbMachineReadPars; *)
+	fbReadCmd : FB_FLM_ReadCmd;
+	fbResetCmd : FB_FLM_ResetCmd;
+	fbReadCtrl : FB_FLM_ReadCtrl;
+	fbReadIn : FB_FLM_ReadInputs;
+	fbDiagnostic : FB_FLM_Diagnostic;
+	fbStateMachine : FB_FLM_StateMachine;
+	fbCorkingStateMachine : FB_FLM_CorkingStateMachine;
+	
+	fbWriteOut : FB_FLM_WriteOutputs;
+	
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[(* -----------------------------------------------------------------------------
+| This sample has been supplied by Beckhoff As-Is and is intended only as an   |
+| example implementation. Functionality is not guaranteed.                     |
+----------------------------------------------------------------------------- *)
+
+IF NOT bInitialized THEN
+	stStatus.stSaved := stStatusSaved;
+	bInitialized := TRUE;		
+ELSE
+
+	(* 01 - Leggi ingressi, controlli, parametri e comandi  *)	
+	fbReadIn(
+		stParams := stParams,		
+		stRawIn := stRawIn
+	);				
+	
+	stIn := fbReadIn.stIn;
+	fbReadCtrl(
+		nId := nId,	
+		bEnable := bEnable,
+		stIn := stIn,	
+				
+	);
+	stCtrl := fbReadCtrl.stCtrl;
+		
+	fbReadCmd(stIn := stIn);
+	stCmd := fbReadCmd.stCmd;	
+
+	(* 03 - Gestione eventi *)	
+	fbDiagnostic(
+		stIn := stIn,
+		stOut := stOut,
+		stCtrl := stCtrl,
+		stParams := stParams,
+		bHwError := bHwError, 
+		bAck := stCmd.bAck, 
+		stStatus := stStatus, 
+		stMotion := stMotion,
+		stDiagnostic := stDiagnostic, 
+	);
+	stStatus.bCritical := fbDiagnostic.bCritical;
+	stStatus.bError := fbDiagnostic.bError;
+	stStatus.bWarning := fbDiagnostic.bWarning;
+	stStatus.bInfo := fbDiagnostic.bInfo;
+	stStatus.bVerbose := fbDiagnostic.bVerbose;
+	stStatus.bFailure := fbDiagnostic.bFailure;
+	
+	stOut.bBlinkingYellow := fbDiagnostic.bBlinking;
+	stOut.bFixedYellow := fbDiagnostic.bFixed;
+	stOut.bHorn := fbDiagnostic.bHorn;
+
+	(* 04 - Macchina a stati principale: *)		
+	fbStateMachine(
+		stIn := stIn,
+		stCtrl := stCtrl,
+		StCmd := stCmd,
+		stParams := stParams,
+		stStatus := stStatus,		
+	);	
+	stStatus.eStep := fbStateMachine.eStep;
+	stStatus.strStep := TO_STRING(stStatus.eStep);
+	stStatus.tStepTime := fbStateMachine.tStepTime;
+	stStatus.eErrorStep := fbStateMachine.eErRstep; 
+	stStatus.nErrorID := fbStateMachine.nErrId;
+	
+	stOut.bConveyor := fbStateMachine.bConveyor;
+	stOut.bWater := fbStateMachine.bWater;
+	stOut.bMint := fbStateMachine.bMint;
+	stOut.bBlinkingGreen := fbStateMachine.bBlinkingGreen;
+	stOut.bFixedGreen := fbStateMachine.bFixedGreen;
+	
+	(* 05 - Macchine a stati secondarie *)
+	fbCorkingStateMachine(
+		bEnable:= stCtrl.bEnable AND stCtrl.bEmergency AND NOT stStatus.bFailure,
+		bAck:= stCmd.bAck, 
+		bStart:= fbStateMachine.bCorkingStart, 
+		bStop:= stCmd.bStop, 
+		bRotationLimitSwitch:= stIn.bCorkingRotationLimitSwitch, 
+		stParams:= stParams.stCorking,		 
+	);
+	stStatus.stCorking.eStep := fbCorkingStateMachine.eStep;
+	stStatus.stCorking.tStepTime := fbCorkingStateMachine.tStepTime;
+	stStatus.stCorking.eErrorStep := fbCorkingStateMachine.eErrStep;
+	stStatus.stCorking.nErrorID	:= fbCorkingStateMachine.nErrID; 
+	
+	stOut.bCorkingRotation := fbCorkingStateMachine.bRotation;
+	stOut.bCorkingVertical := fbCorkingStateMachine.bVertical;
+	
+	(* 06 - Scrivi uscite e informazioni *)	
+	fbWriteOut(		
+		stOut		:= stOut,
+		stParams	:= stParams,		
+		stRawOut	:= stRawOut
+	);
+	
+	// stStatus.stSaved.nCounter := stStatus.stSaved.nCounter +1;	   
+	
+	stStatusSaved := stStatus.stSaved;		// aggiorna struttura con i dati salvati
+
+	(* 07 - fine - altre operazioni*)
+		
+	fbResetCmd();
+
+END_IF;
+
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
